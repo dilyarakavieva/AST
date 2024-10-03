@@ -12,9 +12,13 @@ public class CounterThreadIDSync extends Thread {
 
     @Override
     public void run() {
+        
         for (int i = 0; i < 10; i++) {
-            throw new RuntimeException("//Completar...");
+            mon.waitForTurn(id);
+            System.out.print(id);
+            mon.transferTurn();
         }
     }
 
 }
+
