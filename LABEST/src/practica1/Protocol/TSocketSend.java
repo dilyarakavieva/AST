@@ -6,12 +6,17 @@ import util.SimNet;
 
 public class TSocketSend extends TSocket_base {
 
-  public TSocketSend(SimNet network) {
-    super(network);
-  }
+    public TSocketSend(SimNet network) {
+        super(network);
+    }
 
-  @Override
-  public void sendData(byte[] data, int offset, int length) {
-    throw new RuntimeException("//Completar...");
-  }
+    @Override
+    public void sendData(byte[] data, int offset, int length) {
+        TCPSegment seg = new TCPSegment();
+        seg.setData(data, offset, length);
+        seg.setPsh(true);
+        this.network.send(seg);
+        
+        printSndSeg(seg);
+    }
 }
