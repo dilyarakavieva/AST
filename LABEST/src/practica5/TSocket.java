@@ -1,11 +1,16 @@
 package practica5;
 
+import java.util.TimerTask;
+import java.util.concurrent.locks.Condition;
 import practica1.CircularQ.CircularQueue;
 import practica4.Protocol;
 import util.Const;
 import util.TSocket_base;
 import util.TCPSegment;
 
+// en esta practica he implementado el protocolo Stop and Wait
+// he modificado cosas en segmentize y en processSegment
+//
 public class TSocket extends TSocket_base {
 
     // Sender variables:
@@ -19,6 +24,9 @@ public class TSocket extends TSocket_base {
     protected CircularQueue<TCPSegment> rcv_Queue;
     protected int rcv_SegConsumedBytes;
     protected int rcv_rcvNxt;
+
+    Condition envia; // he añadido condicion para stop and wait
+    boolean flag;
 
     protected TSocket(Protocol p, int localPort, int remotePort) {
         super(p.getNetwork());
@@ -34,39 +42,101 @@ public class TSocket extends TSocket_base {
         rcv_Queue = new CircularQueue<>(Const.RCV_QUEUE_SIZE);
         //rcv_Queue = new CircularQueue<>(2);
 
+        envia = lock.newCondition();// lo he añadido
+        flag = true;
+
     }
 
     // -------------  SENDER PART  ---------------
     @Override
     public void sendData(byte[] data, int offset, int length) {
-        lock.lock();
-        try {
-            throw new RuntimeException("//Completar...");
-        } finally {
-            lock.unlock();
+        TCPSegment seg;
+
+        int num = 0;
+
+        while (MSS < length) {
+            seg = this.segmentize(data, offset + num, MSS);
+            num += MSS;
+            length -= MSS;
         }
+        if (MSS > length) {
+            seg = this.segmentize(data, offset + num, length);
+        }
+
     }
 
     protected TCPSegment segmentize(byte[] data, int offset, int length) {
-        throw new RuntimeException("//Completar...");
-    }
-
-    @Override
-    protected void timeout(TCPSegment seg) {
         lock.lock();
         try {
-            throw new RuntimeException("//Completar...");
+            while (!flag) {
+                envia.awaitUninterruptibly();
+            }
+            TCPSegment seg = new TCPSegment();
+            seg.setData(data, offset, length);
+            seg.setPsh(true);
+            seg.setSourcePort(localPort);
+            seg.setDestinationPort(remotePort);
+
+            seg.setSeqNum(this.snd_sndNxt);
+            this.snd_sndNxt++;// no estoy segura que es snd_snd
+
+            //System.out.println("\t\t\t\t\t\t\t\trecived:"+seg.toString());
+            network.send(seg);
+            
+            flag = false;
+            return seg;
         } finally {
             lock.unlock();
         }
+    }
+
+    @Override
+    protected void timeout(TCPSegment seg) // no se xd
+    {
+        lock.lock();
+        try {
+            //throw new RuntimeException("//Completar...");
+            // 
+            
+            log.printPURPLE(seg.toString());
+        } finally {
+
+            lock.unlock();
+        }
+
+    }
+
+    /**
+     *
+     * @param seg
+     */
+    @Override
+    protected void startRTO(TCPSegment seg) {
+        TimerTask sndRtTimer = new TimerTask() {
+            @Override
+            public void run() {
+                timeout(seg);
+                
+
+            }
+        };
+        timerService.schedule(sndRtTimer, Const.SND_RTO);
     }
 
     // -------------  RECEIVER PART  ---------------
     @Override
-    public int receiveData(byte[] buf, int offset, int maxlen) {
+    public int receiveData(byte[] buf, int offset, int length) {
         lock.lock();
         try {
-            throw new RuntimeException("//Completar...");
+            int num = 0;
+            while (this.rcv_Queue.empty()) {
+                this.appCV.awaitUninterruptibly();
+            }
+
+            while (num < length && !rcv_Queue.empty()) {
+                num += this.consumeSegment(buf, offset + num, length - num);
+            }
+            return num;
         } finally {
             lock.unlock();
         }
@@ -85,17 +155,52 @@ public class TSocket extends TSocket_base {
     }
 
     protected void sendAck() {
-        throw new RuntimeException("//Completar...");
+        TCPSegment seg = new TCPSegment();
+        seg.setAck(true);
+        seg.setDestinationPort(remotePort);
+        seg.setSourcePort(localPort);
+
+        this.snd_rcvNxt++;// he añadido, es lo que espera a recibir
+        this.snd_rcvWnd--;
+        seg.setWnd(this.snd_rcvWnd);//he añadido
+        seg.setAckNum(this.snd_rcvNxt);// no estoy segura
+
+        //log.printBLACK(seg.toString());
+        //System.out.println("\t\t\t\t\t\t\t\trecived:"+seg.toString());
+        network.send(seg);
+
     }
 
     // -------------  SEGMENT ARRIVAL  -------------
     @Override
+
     public void processReceivedSegment(TCPSegment rseg) {
+
         lock.lock();
         try {
-            throw new RuntimeException("//Completar...");
+            //printRcvSeg(rseg);
+
+            if (!this.rcv_Queue.full() && rseg.isPsh()) {
+                this.rcv_Queue.put(rseg);
+                printRcvSeg(rseg);
+                this.sendAck();
+                startRTO(rseg);
+
+                this.appCV.signal();
+
+            }
+            if (rseg.isAck()) {// if no recibe ack durnamte rto envia ootra vez rseg
+                printRcvSeg(rseg);
+                if (rseg.getAckNum() == snd_sndNxt) {
+                    flag = true;
+                    this.envia.signal();
+                }
+                
+            }
+            startRTO(rseg);
         } finally {
             lock.unlock();
         }
     }
+
 }
