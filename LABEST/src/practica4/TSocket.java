@@ -5,6 +5,7 @@ import util.Const;
 import util.TCPSegment;
 import util.TSocket_base;
 
+
 public class TSocket extends TSocket_base {
 
   //sender variable:
@@ -26,21 +27,47 @@ public class TSocket extends TSocket_base {
 
   @Override
   public void sendData(byte[] data, int offset, int length) {
-    throw new RuntimeException("//Completar...");
+     TCPSegment seg;
+        int num = 0;
+        while (MSS < length) {
+            seg = this.segmentize(data, offset + num, MSS);
+            num += MSS;
+            length -= MSS;
+        }
+        if (MSS > length) {
+            seg = this.segmentize(data, offset+num, length);
+        }
   }
 
   protected TCPSegment segmentize(byte[] data, int offset, int length) {
-    throw new RuntimeException("//Completar...");
+    TCPSegment seg = new TCPSegment();
+        seg.setData(data, offset, length);
+        seg.setPsh(true);
+        
+        seg.setSourcePort(localPort);
+        seg.setDestinationPort(remotePort);
+       
+        //System.out.println("\t\t\t\t\t\t\t\trecived:"+seg.toString());
+        network.send(seg);
+        return seg;
   }
 
   @Override
   public int receiveData(byte[] buf, int offset, int length) {
-    lock.lock();
-    try {
-      throw new RuntimeException("//Completar...");
-    } finally {
-      lock.unlock();
-    }
+     lock.lock();
+        try {
+            int num = 0;
+            while (this.rcvQueue.empty()) {
+                this.appCV.awaitUninterruptibly();
+            }
+            
+            while (num < length && !rcvQueue.empty()) {
+                num += this.consumeSegment(buf, offset + num, length - num);
+            }
+            return num;
+        } finally {
+            lock.unlock();
+        }
   }
 
   protected int consumeSegment(byte[] buf, int offset, int length) {
@@ -56,21 +83,33 @@ public class TSocket extends TSocket_base {
   }
 
   protected void sendAck() {
-    throw new RuntimeException("//Completar...");
+        TCPSegment seg = new TCPSegment();
+        seg.setAck(true);
+        seg.setDestinationPort(remotePort);
+        seg.setSourcePort(localPort);
+        
+        //log.printBLACK(seg.toString());
+        //System.out.println("\t\t\t\t\t\t\t\trecived:"+seg.toString());
+        network.send(seg);
+        
   }
 
   @Override
   public void processReceivedSegment(TCPSegment rseg) {
 
-    lock.lock();
-    try {     
-      if (rseg.isAck()){
-        //nothing to be done in this exercise.
-      }
-      throw new RuntimeException("//Completar...");
-    } finally {
-      lock.unlock();
-    }
+   lock.lock();
+        try {
+            printRcvSeg(rseg);
+            if (!this.rcvQueue.full() && rseg.isPsh()) {
+                this.rcvQueue.put(rseg);
+                
+                this.sendAck();
+                this.appCV.signal();
+                
+            }
+        } finally {
+            lock.unlock();
+        }
   }
 
 }
