@@ -15,18 +15,19 @@ public class TSocket extends TSocket_base {
 
     // Sender variables:
     protected int MSS;
-    protected int snd_sndNxt;
+    protected int snd_sndNxt;//el seg q enviamos
     protected int snd_rcvWnd;
-    protected int snd_rcvNxt;
+    protected int snd_rcvNxt;//llegada ACK
     protected boolean zero_wnd_probe_ON;
 
     // Receiver variables:
     protected CircularQueue<TCPSegment> rcv_Queue;
     protected int rcv_SegConsumedBytes;
-    protected int rcv_rcvNxt;
+    protected int rcv_rcvNxt;// llegada de PSH
 
     Condition envia; // he añadido condicion para stop and wait
     boolean flag;
+    TCPSegment segU;
 
     protected TSocket(Protocol p, int localPort, int remotePort) {
         super(p.getNetwork());
@@ -44,6 +45,7 @@ public class TSocket extends TSocket_base {
 
         envia = lock.newCondition();// lo he añadido
         flag = true;
+        //segU = new TCPSegment();
 
     }
 
@@ -69,7 +71,7 @@ public class TSocket extends TSocket_base {
         lock.lock();
         try {
             while (!flag) {
-                envia.awaitUninterruptibly();
+                appCV.awaitUninterruptibly();
             }
             TCPSegment seg = new TCPSegment();
             seg.setData(data, offset, length);
@@ -78,11 +80,11 @@ public class TSocket extends TSocket_base {
             seg.setDestinationPort(remotePort);
 
             seg.setSeqNum(this.snd_sndNxt);
-            this.snd_sndNxt++;// no estoy segura que es snd_snd
 
-            //System.out.println("\t\t\t\t\t\t\t\trecived:"+seg.toString());
             network.send(seg);
-            
+            this.snd_sndNxt++;
+            startRTO(seg);
+
             flag = false;
             return seg;
         } finally {
@@ -97,8 +99,11 @@ public class TSocket extends TSocket_base {
         try {
             //throw new RuntimeException("//Completar...");
             // 
-            
-            log.printPURPLE(seg.toString());
+            if (seg.getSeqNum() >= snd_rcvNxt) {
+
+                log.printPURPLE("retrans: " + seg.toString());
+                this.network.send(seg);
+            }
         } finally {
 
             lock.unlock();
@@ -116,7 +121,6 @@ public class TSocket extends TSocket_base {
             @Override
             public void run() {
                 timeout(seg);
-                
 
             }
         };
@@ -130,6 +134,7 @@ public class TSocket extends TSocket_base {
         try {
             int num = 0;
             while (this.rcv_Queue.empty()) {
+                
                 this.appCV.awaitUninterruptibly();
             }
 
@@ -160,13 +165,9 @@ public class TSocket extends TSocket_base {
         seg.setDestinationPort(remotePort);
         seg.setSourcePort(localPort);
 
-        this.snd_rcvNxt++;// he añadido, es lo que espera a recibir
         this.snd_rcvWnd--;
-        seg.setWnd(this.snd_rcvWnd);//he añadido
-        seg.setAckNum(this.snd_rcvNxt);// no estoy segura
-
-        //log.printBLACK(seg.toString());
-        //System.out.println("\t\t\t\t\t\t\t\trecived:"+seg.toString());
+        seg.setWnd(this.snd_rcvWnd);
+        seg.setAckNum(this.rcv_rcvNxt);
         network.send(seg);
 
     }
@@ -181,23 +182,28 @@ public class TSocket extends TSocket_base {
             //printRcvSeg(rseg);
 
             if (!this.rcv_Queue.full() && rseg.isPsh()) {
-                this.rcv_Queue.put(rseg);
-                printRcvSeg(rseg);
-                this.sendAck();
-                startRTO(rseg);
 
-                this.appCV.signal();
-
-            }
-            if (rseg.isAck()) {// if no recibe ack durnamte rto envia ootra vez rseg
                 printRcvSeg(rseg);
-                if (rseg.getAckNum() == snd_sndNxt) {
-                    flag = true;
-                    this.envia.signal();
+                if (segU != rseg) {
+                    
+                    this.rcv_Queue.put(rseg);
+                    this.rcv_rcvNxt++;// siguiente seg q estamos planeando recibir
                 }
                 
+                this.appCV.signal();
+                this.sendAck();
             }
-            startRTO(rseg);
+            if (rseg.isAck()) {// si hemos recibido un ACK
+                printRcvSeg(rseg);
+                if (rseg.getAckNum() == this.snd_sndNxt) {
+                    this.snd_rcvNxt++;// el siguiente seg q estamos planeando enviar
+                    flag = true;
+                    this.appCV.signal();
+                }
+
+            }
+            segU = rseg;
+
         } finally {
             lock.unlock();
         }
