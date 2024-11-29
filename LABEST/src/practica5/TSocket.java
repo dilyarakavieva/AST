@@ -25,9 +25,8 @@ public class TSocket extends TSocket_base {
     protected int rcv_SegConsumedBytes;
     protected int rcv_rcvNxt;// llegada de PSH
 
+    Condition envia; // he añadido condicion para stop and wait
     boolean flag;
-    TCPSegment segU;
-    int stopNum = 1;
 
     protected TSocket(Protocol p, int localPort, int remotePort) {
         super(p.getNetwork());
@@ -43,8 +42,8 @@ public class TSocket extends TSocket_base {
         //rcv_Queue = new CircularQueue<>(Const.RCV_QUEUE_SIZE);
         rcv_Queue = new CircularQueue<>(2);
 
+        envia = lock.newCondition();// lo he añadido
         flag = true;
-        //segU = new TCPSegment();
 
     }
 
@@ -55,23 +54,29 @@ public class TSocket extends TSocket_base {
         try {
             TCPSegment seg = new TCPSegment();
             int enviado = 0;
-            int enviar = 0;
+            int enviar;
             while (length > enviado) {
                 while (!flag) {
                     appCV.awaitUninterruptibly();
                 }
-                if (this.snd_rcvWnd == 0) {
+
+                if (zero_wnd_probe_ON) {
+
                     enviar = 1;
-                    
+
                 } else {
                     enviar = Math.min(length - enviado, MSS);
                 }
                 seg = this.segmentize(data, offset + enviado, enviar);
-                network.send(seg);
+                if (!zero_wnd_probe_ON){
+                    network.send(seg);    
+                }
+                
                 enviado += enviar;
                 this.snd_sndNxt++;
                 startRTO(seg);
                 flag = false;
+
             }
 
         } finally {
@@ -88,7 +93,6 @@ public class TSocket extends TSocket_base {
         seg.setSourcePort(localPort);
         seg.setDestinationPort(remotePort);
         seg.setSeqNum(this.snd_sndNxt);
-
         return seg;
 
     }
@@ -98,11 +102,9 @@ public class TSocket extends TSocket_base {
     {
         lock.lock();
         try {
-            //throw new RuntimeException("//Completar...");
-            // 
             if (seg.getSeqNum() >= snd_rcvNxt) {
                 if (this.zero_wnd_probe_ON) {
-                    log.printBLACK("0-wnd probe: " + seg);
+                    log.printGREEN("zero-window probe ON: " + seg.toString());
                 } else {
                     log.printPURPLE("retrans: " + seg.toString());
                 }
@@ -116,21 +118,22 @@ public class TSocket extends TSocket_base {
 
     }
 
-//    /**
-//     *
-//     * @param seg
-//     */
-//    @Override
-//    protected void startRTO(TCPSegment seg) {
-//        TimerTask sndRtTimer = new TimerTask() {
-//            @Override
-//            public void run() {
-//                timeout(seg);
-//
-//            }
-//        };
-//        timerService.schedule(sndRtTimer, Const.SND_RTO);
-//    }
+    /**
+     *
+     * @param seg
+     */
+    @Override
+    protected void startRTO(TCPSegment seg) {
+        TimerTask sndRtTimer = new TimerTask() {
+            @Override
+            public void run() {
+                timeout(seg);
+
+            }
+        };
+        timerService.schedule(sndRtTimer, Const.SND_RTO);
+    }
+
     // -------------  RECEIVER PART  ---------------
     @Override
     public int receiveData(byte[] buf, int offset, int length) {
@@ -143,9 +146,7 @@ public class TSocket extends TSocket_base {
             }
 
             while (num < length && !rcv_Queue.empty()) {
-                
-                    num += this.consumeSegment(buf, offset + num, length - num);
-                
+                num += this.consumeSegment(buf, offset + num, length - num);
             }
             return num;
         } finally {
@@ -171,10 +172,9 @@ public class TSocket extends TSocket_base {
         seg.setDestinationPort(remotePort);
         seg.setSourcePort(localPort);
 
-        //this.snd_rcvWnd--;
         seg.setWnd(this.rcv_Queue.free());
-        seg.setAckNum(this.rcv_rcvNxt);
 
+        seg.setAckNum(this.rcv_rcvNxt);
         network.send(seg);
 
     }
@@ -186,12 +186,11 @@ public class TSocket extends TSocket_base {
 
         lock.lock();
         try {
-            //printRcvSeg(rseg);
 
-            if (!this.rcv_Queue.full() && rseg.isPsh() ) {
-
+            if (!this.rcv_Queue.full() && rseg.isPsh()) {
                 printRcvSeg(rseg);
-                if (segU != rseg) {
+                if (rcv_rcvNxt <= rseg.getSeqNum()) 
+                {
 
                     this.rcv_Queue.put(rseg);
                     this.rcv_rcvNxt++;// siguiente seg q estamos planeando recibir
@@ -200,22 +199,31 @@ public class TSocket extends TSocket_base {
                 this.appCV.signal();
                 this.sendAck();
             }
+
             if (rseg.isAck()) {// si hemos recibido un ACK
-                this.zero_wnd_probe_ON = false;
-                
                 printRcvSeg(rseg);
-                if (rseg.getAckNum() == this.snd_sndNxt) {
+                if (rseg.getWnd() > 0 && zero_wnd_probe_ON) 
+                {
+                    this.zero_wnd_probe_ON = false;
+                    log.printGREEN("----- zero-window probe OFF -----");
+
+                }
+                if (rseg.getWnd() == 0) 
+                {
+                    this.zero_wnd_probe_ON = true;
+                    log.printGREEN("----- zero-window probe ON -----");
+                }
+
+                if (rseg.getAckNum() > this.snd_rcvNxt) 
+                {
                     this.snd_rcvNxt++;// el siguiente seg q estamos planeando enviar
                     flag = true;
-                    this.snd_rcvWnd = rseg.getWnd();
                     this.appCV.signal();
                 }
-                if (rseg.getWnd() == 0) {
-                    this.zero_wnd_probe_ON = true;
-                    log.printRED("----- zero-window probe ON -----");
-                }
+
+                snd_rcvWnd = rseg.getWnd();
+
             }
-            segU = rseg;
 
         } finally {
             lock.unlock();
