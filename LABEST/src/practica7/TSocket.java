@@ -79,7 +79,19 @@ public class TSocket extends TSocket_base {
   public void connect() {
     lock.lock();
     try {
-      throw new RuntimeException("//Completar...");
+       state = SYN_SENT;
+       //proto.addActiveTSocket(this); lo añadimos en active socket a la hora de conectar
+       //sendSYN
+       TCPSegment seg = new TCPSegment();
+       seg.setSyn(true);
+       seg.setSourcePort(localPort);
+       seg.setDestinationPort(remotePort);
+       network.send(seg);
+       
+       while(state !=  ESTABLISHED){
+          appCV.awaitUninterruptibly();
+       }
+      
     } finally {
       lock.unlock();
     }
@@ -90,9 +102,34 @@ public class TSocket extends TSocket_base {
     lock.lock();
     try {
       switch (state) {
+          
         case ESTABLISHED:
+        {
+            state = FIN_WAIT;
+            //sendFIN
+            TCPSegment seg = new TCPSegment();
+            seg.setFin(true);
+            seg.setSourcePort(localPort);
+            seg.setDestinationPort(remotePort);
+            network.send(seg);
+            
+            while(state != CLOSED)
+            {
+                appCV.awaitUninterruptibly();
+            }
+            break;// saldra de este case y no pasaremos al otro
+        }
         case CLOSE_WAIT: {
-          throw new RuntimeException("//Completar...");
+            state = CLOSED;
+            
+            //sendFIN
+            TCPSegment seg = new TCPSegment();
+            seg.setFin(true);
+            seg.setSourcePort(localPort);
+            seg.setDestinationPort(remotePort);
+            network.send(seg);
+            proto.removeActiveTSocket(this);// eliminamos este socket de la lista
+          break;
         }
       }
     } finally {
@@ -114,16 +151,32 @@ public class TSocket extends TSocket_base {
       switch (state) {
 
         case SYN_SENT: {
-          if (rseg.isSyn()) {
-            throw new RuntimeException("//Completar...");
+          if (rseg.isSyn())
+          {
+            state = ESTABLISHED;
+            appCV.signal();
           }
           break;
         }
         
-        case ESTABLISHED:
-        case FIN_WAIT:
+        case ESTABLISHED:{
+            if(rseg.isFin())
+            {
+                state = CLOSE_WAIT;    
+            }
+            break;
+        }
+        case FIN_WAIT:{
+            if(rseg.isFin()) 
+            {
+                state = CLOSED;
+                proto.removeActiveTSocket(this);
+                appCV.signal();
+            }
+            break;
+        }
         case CLOSE_WAIT: {
-          if (rseg.isPsh()) {
+         /* if (rseg.isPsh()) {
             if (state == ESTABLISHED || state == FIN_WAIT) {
               // Here should go the segment's data processing.
             } else {
@@ -131,10 +184,10 @@ public class TSocket extends TSocket_base {
               // received from the remote side. 
               // Ignore the data segment.
             }
-          }
-          if (rseg.isFin()) {
+          }*/// NUNCA VAMOS A RECIBIR MAS INFO
+          /*if (rseg.isFin()) {
             throw new RuntimeException("//Completar...");
-          }
+          }*/
           break;
         }
       }
