@@ -12,14 +12,35 @@ public class Protocol extends Protocol_base {
   }
 
   public void ipInput(TCPSegment segment) {
-    throw new RuntimeException("//Completar...");
+    TSocket_base nou = this.getMatchingTSocket(segment.getSourcePort(), segment.getDestinationPort());
+        if (nou != null) {
+            
+            //seg.setDestinationPort(nou.remotePort);// se puede cambiar puerta de seg q llega?
+            //seg.setSourcePort(nou.localPort);
+            nou.processReceivedSegment(segment);
+        } else {
+            log.printPURPLE("no tenemos TSocket_base para este segmento!");
+        }
   }
 
   protected TSocket_base getMatchingTSocket(int localPort, int remotePort) {
     lk.lock();
     try {
-      throw new RuntimeException("//Completar...");
-    } finally {
+            TSocket_base base = new TSocket_base(network);
+            for (TSocket_base nou : this.activeSockets) {
+                if (nou.localPort == remotePort && nou.remotePort == localPort) {
+                    base = nou;
+                    
+                }
+            }
+            for (TSocket_base nou : this.listenSockets) {
+                if (nou.localPort == remotePort) {
+                    base = nou;
+                    
+                }
+            }
+            return base;
+    }finally {
       lk.unlock();
     }
   }
