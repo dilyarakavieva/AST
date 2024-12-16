@@ -72,6 +72,7 @@ public class TServerSocket extends TSocket_base {
     this.localPort = localPort;
     state = CLOSED;
     p.addListenTSocket(this);
+    
     listen();
   }
 
@@ -81,7 +82,7 @@ public class TServerSocket extends TSocket_base {
     try {
       acceptQueue = new CircularQueue<>(Const.LISTEN_QUEUE_SIZE);
       state = LISTEN;
-      proto.addListenTSocket(this);
+      //proto.addListenTSocket(this); // porque no podemos añadir dos veces
     } finally {
       lock.unlock();
     }
@@ -89,13 +90,18 @@ public class TServerSocket extends TSocket_base {
 
   @Override
   public TSocket accept() {
+      // hay un await tmb
     TSocket sc;
     lock.lock();
     try {
-      throw new RuntimeException("//Completar...");
+      while(this.acceptQueue.empty()){
+          appCV.awaitUninterruptibly();
+      }
+      sc=this.acceptQueue.get();
     } finally {
       lock.unlock();
     }
+    return sc;
   }
 
 
@@ -112,7 +118,21 @@ public class TServerSocket extends TSocket_base {
       switch (state) {
         case LISTEN: {
           if (rseg.isSyn()) {
-            throw new RuntimeException("//Completar...");
+            TSocket new_sc = new TSocket(proto, localPort,rseg.getSourcePort()); 
+            //proto.addActiveTSocket(new_sc);
+            new_sc.state = ESTABLISHED;
+            //sendSYN
+            TCPSegment seg = new TCPSegment();
+            seg.setSyn(true);
+            seg.setSourcePort(new_sc.localPort);
+            seg.setDestinationPort(new_sc.remotePort);
+            new_sc.network.send(seg);
+            
+            this.acceptQueue.put(new_sc);
+            appCV.signalAll();
+            
+            
+            
           }
           break;
         }
